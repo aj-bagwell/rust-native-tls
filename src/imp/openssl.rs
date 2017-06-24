@@ -161,6 +161,18 @@ impl Identity {
             chain: parsed.chain.into_iter().flatten().collect(),
         })
     }
+
+    pub fn from_parts(
+        key: PrivateKey,
+        cert: Certificate,
+        chain: Vec<Certificate>,
+    ) -> Result<Identity, Error> {
+        let pkey = key.0;
+        let cert = cert.0;
+        let chain = chain.into_iter().map(|c| c.0).collect();
+        Ok(Identity{pkey, cert, chain})
+    }
+
 }
 
 #[derive(Clone)]
@@ -180,6 +192,20 @@ impl Certificate {
     pub fn to_der(&self) -> Result<Vec<u8>, Error> {
         let der = self.0.to_der()?;
         Ok(der)
+    }
+}
+
+pub struct PrivateKey(PKey<Private>);
+
+impl PrivateKey {
+    pub fn from_der(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let key = PKey::private_key_from_der(buf)?;
+        Ok(PrivateKey(key))
+    }
+
+    pub fn from_pem(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let key = PKey::private_key_from_pem(buf)?;
+        Ok(PrivateKey(key))
     }
 }
 

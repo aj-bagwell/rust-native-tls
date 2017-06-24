@@ -177,6 +177,19 @@ impl Identity {
         let identity = imp::Identity::from_pkcs12(der, password)?;
         Ok(Identity(identity))
     }
+
+    /// Creates an Identity from a certificate, the coresponding private key and a chain of intermediate
+    /// certificates
+    ///
+    /// This is usefull if you client certificate is stored as separate pem files
+    pub fn from_parts(
+        key: PrivateKey,
+        cert: Certificate,
+        chain: Vec<Certificate>,
+    )  -> Result<Identity> {
+        let identity = imp::Identity::from_parts(key.0, cert.0, chain.into_iter().map(|cert| cert.0).collect())?;
+        Ok(Identity(identity))
+    }
 }
 
 /// An X509 certificate.
@@ -200,6 +213,23 @@ impl Certificate {
     pub fn to_der(&self) -> Result<Vec<u8>> {
         let der = self.0.to_der()?;
         Ok(der)
+    }
+}
+
+/// A private key.
+pub struct PrivateKey(imp::PrivateKey);
+
+impl PrivateKey {
+    /// Parses a DER-formatted PKCS#1 private key.
+    pub fn from_der(der: &[u8]) -> Result<PrivateKey> {
+        let key = imp::PrivateKey::from_der(der)?;
+        Ok(PrivateKey(key))
+    }
+
+    /// Parses a DER-formatted PKCS#1 private key.
+    pub fn from_pem(pem: &[u8]) -> Result<PrivateKey> {
+        let key = imp::PrivateKey::from_pem(pem)?;
+        Ok(PrivateKey(key))
     }
 }
 

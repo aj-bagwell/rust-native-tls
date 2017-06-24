@@ -10,6 +10,7 @@ use self::security_framework::import_export::{ImportedIdentity, Pkcs12ImportOpti
 use self::security_framework::secure_transport::{
     self, ClientBuilder, SslConnectionType, SslContext, SslProtocol, SslProtocolSide,
 };
+use self::security_framework::os::macos::identity::SecIdentityExt;
 use self::security_framework_sys::base::{errSecIO, errSecParam};
 use self::tempfile::TempDir;
 use std::error;
@@ -75,6 +76,23 @@ impl From<base::Error> for Error {
     }
 }
 
+fn temp_keychain(pass: &str) -> Result<SecKeychain, Error> {
+    match *TEMP_KEYCHAIN.lock().unwrap() {
+        Some((ref keychain, _)) => Ok(keychain.clone()),
+        ref mut lock @ None => {
+            let dir = TempDir::new().map_err(|_| Error(base::Error::from(errSecIO)))?;
+
+            let mut keychain = keychain::CreateOptions::new()
+                .password(pass)
+                .create(dir.path().join("tmp.keychain"))?;
+            keychain.set_settings(&KeychainSettings::new())?;
+
+            *lock = Some((keychain.clone(), dir));
+            Ok(keychain)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Identity {
     identity: SecIdentity,
@@ -104,6 +122,17 @@ impl Identity {
         })
     }
 
+    pub fn from_parts(
+        key: PrivateKey,
+        cert: Certificate,
+        chain: Vec<Certificate>,
+    ) -> Result<Identity, Error> {
+        let identity = SecIdentity::with_certificate(&[key.0], &cert.0)?;
+        let chain = chain.into_iter().map(|c| c.0).collect();
+        Ok(Identity{identity, chain})
+    }
+
+
     #[cfg(not(target_os = "ios"))]
     fn import_options(buf: &[u8], pass: &str) -> Result<Vec<ImportedIdentity>, Error> {
         SET_AT_EXIT.call_once(|| {
@@ -115,20 +144,7 @@ impl Identity {
             }
         });
 
-        let keychain = match *TEMP_KEYCHAIN.lock().unwrap() {
-            Some((ref keychain, _)) => keychain.clone(),
-            ref mut lock @ None => {
-                let dir = TempDir::new().map_err(|_| Error(base::Error::from(errSecIO)))?;
-
-                let mut keychain = keychain::CreateOptions::new()
-                    .password(pass)
-                    .create(dir.path().join("tmp.keychain"))?;
-                keychain.set_settings(&KeychainSettings::new())?;
-
-                *lock = Some((keychain.clone(), dir));
-                keychain
-            }
-        };
+        let keychain = temp_keychain(pass)?;
         let mut import_opts = Pkcs12ImportOptions::new();
         // Method shadowed by deprecated method.
         <Pkcs12ImportOptions as Pkcs12ImportOptionsExt>::keychain(&mut import_opts, keychain);
@@ -170,6 +186,38 @@ impl Certificate {
 
     pub fn to_der(&self) -> Result<Vec<u8>, Error> {
         Ok(self.0.to_der())
+    }
+}
+
+pub struct PrivateKey(SecKeychain);
+
+impl PrivateKey {
+    pub fn from_der(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let mut keychain = temp_keychain("")?;
+
+        ImportOptions::new()
+            .filename(".der")
+            .keychain(&mut keychain)
+            .import(buf)?;
+
+        Ok(PrivateKey(keychain))
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    pub fn from_pem(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let mut keychain = temp_keychain("")?;
+
+        ImportOptions::new()
+            .filename(".pem")
+            .keychain(&mut keychain)
+            .import(buf)?;
+
+        Ok(PrivateKey(keychain))
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn from_pem(buf: &[u8]) -> Result<Certificate, Error> {
+        panic!("Not implemented on iOS");
     }
 }
 

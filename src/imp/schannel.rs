@@ -1,8 +1,9 @@
 extern crate schannel;
 
-use self::schannel::cert_context::{CertContext, HashAlgorithm};
+use self::schannel::cert_context::{CertContext, HashAlgorithm, KeySpec};
 use self::schannel::cert_store::{CertAdd, CertStore, Memory, PfxImportOptions};
 use self::schannel::schannel_cred::{Direction, Protocol, SchannelCred};
+use self::schannel::crypt_prov::{AcquireOptions, CryptProv, ProviderType};
 use self::schannel::tls_stream;
 use std::error;
 use std::fmt;
@@ -11,6 +12,7 @@ use std::str;
 
 use {TlsAcceptorBuilder, TlsConnectorBuilder};
 
+const CONTAINER_NAME: &'static str = "native-tls";
 const SEC_E_NO_CREDENTIALS: u32 = 0x8009030E;
 
 static PROTOCOLS: &'static [Protocol] = &[
@@ -93,6 +95,27 @@ impl Identity {
 
         Ok(Identity { cert: identity })
     }
+
+    pub fn from_parts(
+        _key: PrivateKey,
+        cert: Certificate,
+        chain: Vec<Certificate>,
+    ) -> Result<Identity, Error> {
+        let mut store = Memory::new()?.into_store();
+        for cert in chain {
+            store.add_cert(&cert.0, CertAdd::ReplaceExisting)?;
+        }
+        let cert = store.add_cert(&cert.0, CertAdd::ReplaceExisting)?;
+
+        cert.set_key_prov_info()
+            .container(CONTAINER_NAME)
+            .type_(ProviderType::rsa_full())
+            .keep_open(true)
+            .key_spec(KeySpec::key_exchange())
+            .set()?;
+
+        Ok(Identity { cert })
+    }
 }
 
 #[derive(Clone)]
@@ -120,6 +143,47 @@ impl Certificate {
 
     pub fn to_der(&self) -> Result<Vec<u8>, Error> {
         Ok(self.0.to_der().to_vec())
+    }
+}
+
+pub struct PrivateKey(CryptProv);
+
+fn get_container() -> Result<CryptProv, Error> {
+    let mut options = AcquireOptions::new();
+    options.container(CONTAINER_NAME)
+        .new_keyset(true);
+    let type_ = ProviderType::rsa_full();
+
+    // this is kind of a mess - we have to tell WinAPI to either open an
+    // existing container or create a new one, but there's no "open or
+    // create" option. If you try to create it and it exists it'll error
+    // and if you try to open it and it doesn't exist it'll error. We first
+    // try to open an existing one, then try to create it, then finally try
+    // to open it in case a parallel caller created it concurrently.
+    Ok(match options.acquire(type_) {
+        Ok(container) => container,
+        Err(_) => {
+            match options.new_keyset(true).acquire(type_) {
+                Ok(container) => container,
+                Err(_) => options.new_keyset(false).acquire(type_)?,
+            }
+        }
+    })
+}
+
+impl PrivateKey {
+    pub fn from_der(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let mut container = get_container()?;
+        container.import().import(buf)?;
+
+        Ok(PrivateKey(container))
+    }
+
+    pub fn from_pem(buf: &[u8]) -> Result<PrivateKey, Error> {
+        let mut container = get_container()?;
+        container.import().import_pkcs8_pem(buf)?;
+
+        Ok(PrivateKey(container))
     }
 }
 
